@@ -176,6 +176,8 @@ async def setup(interaction: discord.Interaction):
         if private or wl:
             ow={g.default_role: discord.PermissionOverwrite(view_channel=False)}
             for r in (wl_roles if wl else staff_roles): ow[r]=discord.PermissionOverwrite(view_channel=True)
+        if ow is None:
+            return await g.create_category(name)
         return await g.create_category(name, overwrites=ow)
     welcome=await category('🔫・WELCOME')
     factions=await category('💰・FACTIONS')
@@ -190,7 +192,9 @@ async def setup(interaction: discord.Interaction):
         if readonly:
             ow={g.default_role:discord.PermissionOverwrite(send_messages=False,view_channel=True)}
             for r in staff_roles: ow[r]=discord.PermissionOverwrite(send_messages=True,view_channel=True)
-        return await g.create_text_channel(name,category=cat,overwrites=ow)
+        if ow is None:
+            return await g.create_text_channel(name, category=cat)
+        return await g.create_text_channel(name, category=cat, overwrites=ow)
     async def voice(cat,name):
         return discord.utils.get(cat.voice_channels,name=name) or await g.create_voice_channel(name,category=cat)
 
