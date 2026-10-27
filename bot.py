@@ -530,20 +530,40 @@ async def disband(interaction: discord.Interaction, faction: str):
             ephemeral=True
         )
 
-    affected = []
-    if gang_role:
-        affected = list(gang_role.members)
+    # Capture every gang member BEFORE deleting the gang role.
+    affected = list(gang_role.members) if gang_role else []
 
-    # Remove Gang Leaders/WL Faction from members of this gang.
     leader_role = g.get_role(cfg.get('roles', {}).get('leader'))
     wl_role = g.get_role(cfg.get('roles', {}).get('wl'))
-    for member in affected:
-        remove_roles = [r for r in (gang_role, leader_role, wl_role) if r and r in member.roles]
-        if remove_roles:
+
+    # First remove the gang-specific role from everybody.
+    if gang_role:
+        for member in affected:
             try:
-                await member.remove_roles(*remove_roles, reason=f'{name} disbanded by {interaction.user}')
+                await member.remove_roles(gang_role, reason=f'{name} disbanded by {interaction.user}')
             except discord.HTTPException:
                 pass
+
+    # Then remove Gang Leaders/WL Faction only when the member does not belong
+    # to another approved gang. This prevents stripping access from someone
+    # who is legitimately in another faction too.
+    for member in affected:
+        other_gang_roles = [
+            role for role in member.roles
+            if role != gang_role and role.name.startswith('🔫・')
+            and role.id not in {
+                cfg.get('roles', {}).get('staff'),
+                cfg.get('roles', {}).get('management'),
+                cfg.get('roles', {}).get('head')
+            }
+        ]
+        if not other_gang_roles:
+            remove_roles = [r for r in (leader_role, wl_role) if r and r in member.roles]
+            if remove_roles:
+                try:
+                    await member.remove_roles(*remove_roles, reason=f'{name} disbanded by {interaction.user}')
+                except discord.HTTPException:
+                    pass
 
     # Delete every channel in the gang category, then the category.
     if category:
