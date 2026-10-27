@@ -178,6 +178,38 @@ class InteractionModal(discord.ui.Modal, title='Submit Interaction Clip'):
         await ch.send(embed=e, view=DecisionView('interaction'))
         await interaction.response.send_message('Clip submitted to Faction Staff for review. 🎥', ephemeral=True)
 
+
+class GangRoleRequestModal(discord.ui.Modal, title='Request A Gang Role'):
+    gang = discord.ui.TextInput(label='Gang Name', placeholder='Example: Cheetah Girls', max_length=80)
+
+    async def on_submit(self, interaction: discord.Interaction):
+        cfg=guild_cfg(interaction.guild_id)
+        gang_role=find_gang_role(interaction.guild,self.gang.value)
+        if gang_role is None:
+            return await interaction.response.send_message(
+                f'❌ I could not find an approved gang named **{self.gang.value}**.',ephemeral=True
+            )
+        ch=interaction.guild.get_channel(cfg.get('channels',{}).get('role_requests'))
+        if not ch:
+            return await interaction.response.send_message('Role request channel is not configured.',ephemeral=True)
+
+        e=discord.Embed(title='🎭 Gang Role Request',color=gang_role.color,timestamp=datetime.now(timezone.utc))
+        e.add_field(name='Member',value=f'{interaction.user.mention} (`{interaction.user.id}`)',inline=False)
+        e.add_field(name='Gang',value=gang_role.name.split('・',1)[-1],inline=False)
+        e.add_field(name='Status',value='⏳ Waiting for Gang Leader approval',inline=False)
+        e.set_footer(text=f'Requester ID: {interaction.user.id} • Gang Role ID: {gang_role.id}')
+        await ch.send(embed=e)
+        await interaction.response.send_message(
+            f'✅ Your request for **{gang_role.name.split("・",1)[-1]}** was sent. Your Gang Leader must use `/approve` on you.',
+            ephemeral=True
+        )
+
+class GangRoleRequestView(discord.ui.View):
+    def __init__(self): super().__init__(timeout=None)
+    @discord.ui.button(label='Request Gang Role',emoji='🎭',style=discord.ButtonStyle.primary,custom_id='factions:role_request')
+    async def request_role(self,interaction,button):
+        await interaction.response.send_modal(GangRoleRequestModal())
+
 class TicketView(discord.ui.View):
     def __init__(self):
         super().__init__(timeout=None)
@@ -221,7 +253,7 @@ class SubmitInteractionView(discord.ui.View):
 
 @bot.event
 async def on_ready():
-    bot.add_view(TicketView()); bot.add_view(CloseTicketView()); bot.add_view(ApplyView()); bot.add_view(SubmitInteractionView()); bot.add_view(DecisionView('persistent'))
+    bot.add_view(TicketView()); bot.add_view(CloseTicketView()); bot.add_view(ApplyView()); bot.add_view(SubmitInteractionView()); bot.add_view(GangRoleRequestView()); bot.add_view(DecisionView('persistent'))
     guild = bot.get_guild(TARGET_GUILD_ID)
     if guild:
         try:
@@ -288,6 +320,7 @@ async def setup(interaction: discord.Interaction):
     channels['beef']=(await text(wlcat,'🥩・beef-chat')).id
     channels['interaction_approval']=(await text(wlcat,'📹・interaction-approval')).id
     channels['submit_interaction']=(await text(wlcat,'🎫・submit-interaction')).id
+    channels['role_requests']=(await text(wlcat,'🎭・role-request')).id
     channels['faction_meeting_vc']=(await voice(wlcat,'🔊・Faction Meeting VC')).id
     channels['open_ticket']=(await text(support,'🎟️・open-a-ticket')).id
     channels['suggestions']=(await text(support,'💡・suggestions')).id
@@ -301,10 +334,11 @@ async def setup(interaction: discord.Interaction):
 
     data=load_config(); data[str(g.id)]={'roles':roles,'channels':channels,'categories':{'support':support.id,'staff':staffcat.id,'wl':wlcat.id}}; save_config(data)
 
-    become=g.get_channel(channels['become']); ticket=g.get_channel(channels['open_ticket']); submit=g.get_channel(channels['submit_interaction'])
+    become=g.get_channel(channels['become']); ticket=g.get_channel(channels['open_ticket']); submit=g.get_channel(channels['submit_interaction']); role_req=g.get_channel(channels['role_requests'])
     await become.send(embed=discord.Embed(title='🔫 Become A Faction',description='Ready to bring your faction into FreakNik RP? Hit the button below to submit your application.',color=discord.Color.dark_red()),view=ApplyView())
     await ticket.send(embed=discord.Embed(title='🎧 Faction Support',description='Need help? Open one general support ticket below.',color=discord.Color.dark_red()),view=TicketView())
     await submit.send(embed=discord.Embed(title='🎥 Submit An Interaction',description='Submit your interaction clip privately for Faction Staff to review and approve or deny.',color=discord.Color.dark_red()),view=SubmitInteractionView())
+    await role_req.send(embed=discord.Embed(title='🎭 Request Your Gang Role',description='Need your gang role? Hit the button below, enter your gang name, then have your Gang Leader approve you with `/approve`.',color=discord.Color.dark_red()),view=GangRoleRequestView())
     await interaction.followup.send('✅ FreakNik RP Factions setup is complete. Roles, categories, channels, VCs and panels were created.',ephemeral=True)
 
 
@@ -508,6 +542,152 @@ async def whitelist(interaction: discord.Interaction, member: discord.Member):
     role=interaction.guild.get_role(cfg.get('roles',{}).get('wl'))
     await member.add_roles(role,reason=f'Whitelisted by {interaction.user}')
     await interaction.response.send_message(f'💯 {member.mention} now has WL Faction access.',ephemeral=True)
+
+
+
+@bot.tree.command(name='setuprolerequest', description='Create the gang role request channel and panel', guild=guild_obj)
+async def setuprolerequest(interaction: discord.Interaction):
+    if not (owner_check(interaction.user) or interaction.user.guild_permissions.administrator):
+        return await interaction.response.send_message('Only the bot owner or a server Administrator can run this.',ephemeral=True)
+    await interaction.response.defer(ephemeral=True)
+    g=interaction.guild
+    cfg=guild_cfg(g.id)
+    wlcat=g.get_channel(cfg.get('categories',{}).get('wl'))
+    if not isinstance(wlcat,discord.CategoryChannel):
+        return await interaction.followup.send('WL FACTIONS category is missing.',ephemeral=True)
+
+    ch=discord.utils.get(wlcat.text_channels,name='🎭・role-request')
+    if ch is None:
+        ch=await g.create_text_channel('🎭・role-request',category=wlcat)
+
+    data=load_config()
+    data.setdefault(str(g.id),{}).setdefault('channels',{})['role_requests']=ch.id
+    save_config(data)
+
+    await ch.send(
+        embed=discord.Embed(
+            title='🎭 Request Your Gang Role',
+            description='Need your gang role? Hit the button below, enter your gang name, then have your Gang Leader approve you with `/approve`.',
+            color=discord.Color.dark_red()
+        ),
+        view=GangRoleRequestView()
+    )
+    await interaction.followup.send(f'✅ Gang role requests are ready in {ch.mention}.',ephemeral=True)
+
+
+def member_gang_roles(member, cfg):
+    protected={
+        cfg.get('roles',{}).get('staff'),
+        cfg.get('roles',{}).get('management'),
+        cfg.get('roles',{}).get('head')
+    }
+    return [r for r in member.roles if r.name.startswith('🔫・') and r.id not in protected]
+
+@bot.tree.command(name='approve', description='Approve a member for your own gang role', guild=guild_obj)
+@app_commands.describe(member='Member requesting your gang role')
+async def approve_member(interaction: discord.Interaction, member: discord.Member):
+    cfg=guild_cfg(interaction.guild_id)
+    leader_role=interaction.guild.get_role(cfg.get('roles',{}).get('leader'))
+    is_staff=staff_check(interaction.user,cfg)
+
+    leader_gangs=member_gang_roles(interaction.user,cfg)
+    if not is_staff and (not leader_role or leader_role not in interaction.user.roles):
+        return await interaction.response.send_message('❌ Only Gang Leaders or Faction Staff can approve gang roles.',ephemeral=True)
+    if not is_staff and not leader_gangs:
+        return await interaction.response.send_message('❌ You do not have a gang role to approve members for.',ephemeral=True)
+
+    if is_staff:
+        # Staff override: infer the gang from the member's pending request.
+        req_ch=interaction.guild.get_channel(cfg.get('channels',{}).get('role_requests'))
+        target_role=None
+        if req_ch:
+            async for msg in req_ch.history(limit=100):
+                if not msg.embeds: continue
+                e=msg.embeds[0]
+                footer=e.footer.text or ''
+                if f'Requester ID: {member.id}' in footer and 'Gang Role ID:' in footer:
+                    try:
+                        rid=int(footer.split('Gang Role ID:')[-1].strip())
+                        target_role=interaction.guild.get_role(rid)
+                    except ValueError: pass
+                    if target_role: break
+        if target_role is None:
+            return await interaction.response.send_message('❌ I could not find a pending role request for that member.',ephemeral=True)
+    else:
+        if len(leader_gangs)>1:
+            return await interaction.response.send_message('❌ You have more than one gang role. Ask Faction Staff to approve this request.',ephemeral=True)
+        target_role=leader_gangs[0]
+
+    # Verify the member actually requested THIS gang.
+    req_ch=interaction.guild.get_channel(cfg.get('channels',{}).get('role_requests'))
+    request_message=None
+    if req_ch:
+        async for msg in req_ch.history(limit=100):
+            if not msg.embeds: continue
+            footer=msg.embeds[0].footer.text or ''
+            if f'Requester ID: {member.id}' in footer and f'Gang Role ID: {target_role.id}' in footer:
+                status=field_value(msg.embeds[0],'Status') or ''
+                if 'Waiting' in status:
+                    request_message=msg
+                    break
+    if request_message is None:
+        return await interaction.response.send_message(
+            f'❌ {member.mention} does not have a pending request for **{target_role.name.split("・",1)[-1]}**.',
+            ephemeral=True
+        )
+
+    wl_role=interaction.guild.get_role(cfg.get('roles',{}).get('wl'))
+    add=[r for r in (wl_role,target_role) if r]
+    await member.add_roles(*add,reason=f'Gang role approved by {interaction.user}')
+
+    e=request_message.embeds[0].copy()
+    for i,f in enumerate(e.fields):
+        if f.name=='Status':
+            e.set_field_at(i,name='Status',value=f'✅ Approved by {interaction.user.mention}',inline=False)
+            break
+    e.color=discord.Color.green()
+    await request_message.edit(embed=e)
+
+    await interaction.response.send_message(
+        f'✅ {member.mention} was approved for **{target_role.name.split("・",1)[-1]}** and given WL Faction access.',
+        ephemeral=True
+    )
+
+@bot.tree.command(name='removegangmember', description='Remove a member from your own gang', guild=guild_obj)
+@app_commands.describe(member='Member to remove from your gang')
+async def remove_gang_member(interaction: discord.Interaction, member: discord.Member):
+    cfg=guild_cfg(interaction.guild_id)
+    leader_role=interaction.guild.get_role(cfg.get('roles',{}).get('leader'))
+    is_staff=staff_check(interaction.user,cfg)
+    leader_gangs=member_gang_roles(interaction.user,cfg)
+
+    if not is_staff and (not leader_role or leader_role not in interaction.user.roles or not leader_gangs):
+        return await interaction.response.send_message('❌ Only Gang Leaders or Faction Staff can remove gang members.',ephemeral=True)
+
+    if is_staff:
+        target_roles=member_gang_roles(member,cfg)
+        if len(target_roles)!=1:
+            return await interaction.response.send_message('❌ Staff removal needs the member to have exactly one gang role.',ephemeral=True)
+        target_role=target_roles[0]
+    else:
+        if len(leader_gangs)>1:
+            return await interaction.response.send_message('❌ You have more than one gang role. Ask Faction Staff for help.',ephemeral=True)
+        target_role=leader_gangs[0]
+        if target_role not in member.roles:
+            return await interaction.response.send_message(f'❌ {member.mention} is not in your gang.',ephemeral=True)
+
+    await member.remove_roles(target_role,reason=f'Removed from gang by {interaction.user}')
+
+    # Remove WL only if they have no other gang-specific role left.
+    remaining=member_gang_roles(member,cfg)
+    wl_role=interaction.guild.get_role(cfg.get('roles',{}).get('wl'))
+    if not remaining and wl_role and wl_role in member.roles:
+        await member.remove_roles(wl_role,reason=f'No remaining gang role after removal by {interaction.user}')
+
+    await interaction.response.send_message(
+        f'✅ Removed **{target_role.name.split("・",1)[-1]}** from {member.mention}.',
+        ephemeral=True
+    )
 
 
 @bot.tree.command(name='disband', description='Disband a whitelisted faction and remove its Discord setup', guild=guild_obj)
