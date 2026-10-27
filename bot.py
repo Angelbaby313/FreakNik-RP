@@ -320,7 +320,7 @@ async def setup(interaction: discord.Interaction):
     channels['beef']=(await text(wlcat,'🥩・beef-chat')).id
     channels['interaction_approval']=(await text(wlcat,'📹・interaction-approval')).id
     channels['submit_interaction']=(await text(wlcat,'🎫・submit-interaction')).id
-    channels['role_requests']=(await text(wlcat,'🎭・role-request')).id
+    channels['role_requests']=(await text(factions,'🎭・role-request')).id
     channels['faction_meeting_vc']=(await voice(wlcat,'🔊・Faction Meeting VC')).id
     channels['open_ticket']=(await text(support,'🎟️・open-a-ticket')).id
     channels['suggestions']=(await text(support,'💡・suggestions')).id
@@ -552,13 +552,18 @@ async def setuprolerequest(interaction: discord.Interaction):
     await interaction.response.defer(ephemeral=True)
     g=interaction.guild
     cfg=guild_cfg(g.id)
-    wlcat=g.get_channel(cfg.get('categories',{}).get('wl'))
-    if not isinstance(wlcat,discord.CategoryChannel):
-        return await interaction.followup.send('WL FACTIONS category is missing.',ephemeral=True)
+    factions_cat=discord.utils.get(g.categories,name='💰・FACTIONS')
+    if not isinstance(factions_cat,discord.CategoryChannel):
+        return await interaction.followup.send('FACTIONS category is missing.',ephemeral=True)
 
-    ch=discord.utils.get(wlcat.text_channels,name='🎭・role-request')
+    ch=discord.utils.get(factions_cat.text_channels,name='🎭・role-request')
     if ch is None:
-        ch=await g.create_text_channel('🎭・role-request',category=wlcat)
+        # If a role-request channel already exists elsewhere, move/reuse it instead of duplicating it.
+        ch=discord.utils.get(g.text_channels,name='🎭・role-request')
+        if ch:
+            await ch.edit(category=factions_cat,reason='Move role requests to public FACTIONS category')
+        else:
+            ch=await g.create_text_channel('🎭・role-request',category=factions_cat)
 
     data=load_config()
     data.setdefault(str(g.id),{}).setdefault('channels',{})['role_requests']=ch.id
