@@ -692,16 +692,23 @@ async def remove_gang_member(interaction: discord.Interaction, member: discord.M
         if target_role not in member.roles:
             return await interaction.response.send_message(f'❌ {member.mention} is not in your gang.',ephemeral=True)
 
+    # Capture whether they should lose WL before Discord's member cache updates.
+    other_gang_roles=[
+        r for r in member_gang_roles(member,cfg)
+        if r.id != target_role.id
+    ]
+    wl_role=interaction.guild.get_role(cfg.get('roles',{}).get('wl'))
+
+    # Remove the gang role.
     await member.remove_roles(target_role,reason=f'Removed from gang by {interaction.user}')
 
-    # Remove WL only if they have no other gang-specific role left.
-    remaining=member_gang_roles(member,cfg)
-    wl_role=interaction.guild.get_role(cfg.get('roles',{}).get('wl'))
-    if not remaining and wl_role and wl_role in member.roles:
-        await member.remove_roles(wl_role,reason=f'No remaining gang role after removal by {interaction.user}')
+    # If this was their only gang, remove WL Faction too.
+    if not other_gang_roles and wl_role and wl_role in member.roles:
+        await member.remove_roles(wl_role,reason=f'No remaining gang after removal by {interaction.user}')
 
     await interaction.response.send_message(
-        f'✅ Removed **{target_role.name.split("・",1)[-1]}** from {member.mention}.',
+        f'✅ Removed **{target_role.name.split("・",1)[-1]}** from {member.mention}'
+        + (' and removed **WL Faction**.' if not other_gang_roles else '.'),
         ephemeral=True
     )
 
