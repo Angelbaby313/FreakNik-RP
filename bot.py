@@ -73,6 +73,17 @@ async def build_approved_faction(interaction, embed, cfg):
 
     leader_role=g.get_role(cfg.get('roles',{}).get('leader'))
     wl_role=g.get_role(cfg.get('roles',{}).get('wl'))
+
+    # Keep the gang-specific role above Gang Leaders/WL Faction so the gang
+    # color becomes the member's displayed Discord name color.
+    if leader_role:
+        try:
+            await g.edit_role_positions(
+                positions={gang_role: leader_role.position + 1},
+                reason=f'Prioritize {name} gang color'
+            )
+        except (discord.Forbidden, discord.HTTPException):
+            pass
     add=[r for r in (leader_role,wl_role,gang_role) if r]
     if add: await leader.add_roles(*add,reason=f'Faction approved by {interaction.user}')
 
