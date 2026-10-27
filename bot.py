@@ -307,15 +307,170 @@ async def setup(interaction: discord.Interaction):
     await submit.send(embed=discord.Embed(title='🎥 Submit An Interaction',description='Submit your interaction clip privately for Faction Staff to review and approve or deny.',color=discord.Color.dark_red()),view=SubmitInteractionView())
     await interaction.followup.send('✅ FreakNik RP Factions setup is complete. Roles, categories, channels, VCs and panels were created.',ephemeral=True)
 
-@bot.tree.command(name='strike', description='Issue a faction strike', guild=guild_obj)
-@app_commands.describe(faction='Faction/gang name', reason='Reason for the strike')
+def faction_strike_record(guild_id, faction):
+    data = load_config()
+    gid = str(guild_id)
+    data.setdefault(gid, {})
+    data[gid].setdefault('strikes', {})
+    key = faction.strip().lower()
+    data[gid]['strikes'].setdefault(key, {'name': faction.strip(), 'active': [], 'history': []})
+    return data, data[gid]['strikes'][key]
+
+@bot.tree.command(name='strike', description='Give a faction an official strike', guild=guild_obj)
+@app_commands.describe(faction='Exact faction/gang name', reason='Reason for the strike')
 async def strike(interaction: discord.Interaction, faction: str, reason: str):
-    cfg=guild_cfg(interaction.guild_id)
-    if not staff_check(interaction.user,cfg): return await interaction.response.send_message('Faction Staff only.',ephemeral=True)
-    ch=interaction.guild.get_channel(cfg.get('channels',{}).get('faction_strikes'))
-    e=discord.Embed(title='⚠️ Faction Strike',color=discord.Color.red(),timestamp=datetime.now(timezone.utc))
-    e.add_field(name='Faction',value=faction,inline=False); e.add_field(name='Reason',value=reason,inline=False); e.add_field(name='Issued By',value=interaction.user.mention,inline=False)
-    await ch.send(embed=e); await interaction.response.send_message('Strike logged.',ephemeral=True)
+    cfg = guild_cfg(interaction.guild_id)
+    if not staff_check(interaction.user, cfg):
+        return await interaction.response.send_message('Faction Staff only.', ephemeral=True)
+
+    gang_role = discord.utils.get(interaction.guild.roles, name=f'🔫・{faction.strip()}')
+    if gang_role is None:
+        return await interaction.response.send_message(
+            f'❌ I could not find an approved faction named **{faction.strip()}**. Use the exact gang name.',
+            ephemeral=True
+        )
+
+    data, record = faction_strike_record(interaction.guild_id, faction)
+    if len(record['active']) >= 3:
+        return await interaction.response.send_message(
+            f'🚨 **{record["name"]}** already has 3/3 active strikes and is up for disband review.',
+            ephemeral=True
+        )
+
+    entry = {
+        'reason': reason,
+        'issued_by_id': interaction.user.id,
+        'issued_by': str(interaction.user),
+        'timestamp': datetime.now(timezone.utc).isoformat()
+    }
+    record['active'].append(entry)
+    record['history'].append({'action': 'issued', **entry})
+    save_config(data)
+
+    count = len(record['active'])
+    ch = interaction.guild.get_channel(cfg.get('channels', {}).get('faction_strikes'))
+    if ch:
+        e = discord.Embed(
+            title='⚠️ Official Faction Strike',
+            color=discord.Color.red() if count >= 3 else discord.Color.orange(),
+            timestamp=datetime.now(timezone.utc)
+        )
+        e.add_field(name='Faction', value=record['name'], inline=False)
+        e.add_field(name='Strike Count', value=f'**{count}/3**', inline=True)
+        e.add_field(name='Reason', value=reason, inline=False)
+        e.add_field(name='Issued By', value=interaction.user.mention, inline=False)
+        if count >= 3:
+            e.add_field(
+                name='🚨 Status',
+                value='**3/3 STRIKES — UP FOR DISBAND REVIEW**\nStaff must use `/disband` if the faction is being removed.',
+                inline=False
+            )
+        await ch.send(embed=e)
+
+    msg = f'⚠️ **{record["name"]}** now has **{count}/3** active strikes.'
+    if count >= 3:
+        msg += ' 🚨 They are now **UP FOR DISBAND REVIEW**.'
+    await interaction.response.send_message(msg, ephemeral=True)
+
+
+@bot.tree.command(name='removestrike', description='Remove one active strike from a faction', guild=guild_obj)
+@app_commands.describe(faction='Exact faction/gang name', reason='Why the strike is being removed')
+async def removestrike(interaction: discord.Interaction, faction: str, reason: str):
+    cfg = guild_cfg(interaction.guild_id)
+    if not staff_check(interaction.user, cfg):
+        return await interaction.response.send_message('Faction Staff only.', ephemeral=True)
+
+    data = load_config()
+    gid = str(interaction.guild_id)
+    key = faction.strip().lower()
+    record = data.get(gid, {}).get('strikes', {}).get(key)
+
+    if not record or not record.get('active'):
+        return await interaction.response.send_message(
+            f'❌ **{faction.strip()}** does not have any active strikes to remove.',
+            ephemeral=True
+        )
+
+    removed = record['active'].pop()
+    record.setdefault('history', []).append({
+        'action': 'removed',
+        'original_reason': removed.get('reason', 'N/A'),
+        'removal_reason': reason,
+        'removed_by_id': interaction.user.id,
+        'removed_by': str(interaction.user),
+        'timestamp': datetime.now(timezone.utc).isoformat()
+    })
+    save_config(data)
+
+    count = len(record['active'])
+    ch = interaction.guild.get_channel(cfg.get('channels', {}).get('faction_strikes'))
+    if ch:
+        e = discord.Embed(
+            title='✅ Faction Strike Removed',
+            color=discord.Color.green(),
+            timestamp=datetime.now(timezone.utc)
+        )
+        e.add_field(name='Faction', value=record['name'], inline=False)
+        e.add_field(name='New Strike Count', value=f'**{count}/3**', inline=True)
+        e.add_field(name='Removed Strike', value=removed.get('reason', 'N/A'), inline=False)
+        e.add_field(name='Removal Reason', value=reason, inline=False)
+        e.add_field(name='Removed By', value=interaction.user.mention, inline=False)
+        await ch.send(embed=e)
+
+    await interaction.response.send_message(
+        f'✅ Removed one strike from **{record["name"]}**. They now have **{count}/3** active strikes.',
+        ephemeral=True
+    )
+
+
+@bot.tree.command(name='strikes', description='Check a faction strike count and recent history', guild=guild_obj)
+@app_commands.describe(faction='Exact faction/gang name')
+async def strikes(interaction: discord.Interaction, faction: str):
+    cfg = guild_cfg(interaction.guild_id)
+    if not staff_check(interaction.user, cfg):
+        return await interaction.response.send_message('Faction Staff only.', ephemeral=True)
+
+    data = load_config()
+    key = faction.strip().lower()
+    record = data.get(str(interaction.guild_id), {}).get('strikes', {}).get(key)
+
+    if not record:
+        return await interaction.response.send_message(
+            f'**{faction.strip()}** has **0/3** active strikes and no strike history.',
+            ephemeral=True
+        )
+
+    active = record.get('active', [])
+    history = record.get('history', [])
+    e = discord.Embed(
+        title=f'⚠️ {record["name"]} Strike Record',
+        color=discord.Color.red() if len(active) >= 3 else discord.Color.orange(),
+        timestamp=datetime.now(timezone.utc)
+    )
+    e.add_field(name='Active Strikes', value=f'**{len(active)}/3**', inline=False)
+
+    if active:
+        active_text = '\n'.join(
+            f'**{i}.** {item.get("reason", "No reason")}'
+            for i, item in enumerate(active, 1)
+        )
+        e.add_field(name='Current Strikes', value=active_text[:1024], inline=False)
+
+    if history:
+        recent = history[-5:]
+        history_lines = []
+        for item in reversed(recent):
+            if item.get('action') == 'issued':
+                history_lines.append(f'➕ {item.get("reason", "No reason")} — {item.get("issued_by", "Staff")}')
+            else:
+                history_lines.append(f'➖ Removed: {item.get("original_reason", "N/A")} — {item.get("removal_reason", "No reason")}')
+        e.add_field(name='Recent History', value='\n'.join(history_lines)[:1024], inline=False)
+
+    if len(active) >= 3:
+        e.add_field(name='🚨 Status', value='UP FOR DISBAND REVIEW', inline=False)
+
+    await interaction.response.send_message(embed=e, ephemeral=True)
+
 
 @bot.tree.command(name='whitelist', description='Give a member the WL Faction role', guild=guild_obj)
 async def whitelist(interaction: discord.Interaction, member: discord.Member):
@@ -378,6 +533,21 @@ async def disband(interaction: discord.Interaction, faction: str):
             await gang_role.delete(reason=f'{name} disbanded by {interaction.user}')
         except discord.HTTPException:
             pass
+
+    # Clear active strikes when a faction is disbanded, while preserving history.
+    data = load_config()
+    gid = str(g.id)
+    key = name.lower()
+    record = data.get(gid, {}).get('strikes', {}).get(key)
+    if record:
+        record.setdefault('history', []).append({
+            'action': 'disbanded',
+            'disbanded_by_id': interaction.user.id,
+            'disbanded_by': str(interaction.user),
+            'timestamp': datetime.now(timezone.utc).isoformat()
+        })
+        record['active'] = []
+        save_config(data)
 
     # Post a clear disband notice in the whitelist channel.
     whitelist_ch = g.get_channel(cfg.get('channels', {}).get('whitelisted'))
