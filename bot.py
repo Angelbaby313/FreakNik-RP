@@ -1,4 +1,4 @@
-import os, json, asyncio
+import os, json, asyncio, re
 from datetime import datetime, timezone
 import discord
 from discord.ext import commands
@@ -37,19 +37,95 @@ async def safe_defer(interaction, ephemeral=True):
     if not interaction.response.is_done():
         await interaction.response.defer(ephemeral=ephemeral)
 
+
+COLOR_NAMES = {'red':0xE74C3C,'green':0x2ECC71,'lime':0x39FF14,'blue':0x3498DB,'purple':0x9B59B6,'pink':0xFF69B4,'orange':0xE67E22,'yellow':0xF1C40F,'gold':0xF1C40F,'black':0x111111,'white':0xFFFFFF,'gray':0x95A5A6,'grey':0x95A5A6,'teal':0x1ABC9C,'cyan':0x00FFFF}
+
+def parse_gang_color(value):
+    raw=(value or '').strip()
+    if raw.lower() in COLOR_NAMES: return discord.Color(COLOR_NAMES[raw.lower()])
+    h=raw.lstrip('#')
+    if re.fullmatch(r'[0-9a-fA-F]{6}', h): return discord.Color(int(h,16))
+    return discord.Color.default()
+
+def field_value(embed, name):
+    for f in embed.fields:
+        if f.name.lower()==name.lower(): return f.value
+    return None
+
+def submitter_id(embed):
+    m=re.search(r'(\d{15,22})\s*$', embed.footer.text or '')
+    return int(m.group(1)) if m else None
+
+async def build_approved_faction(interaction, embed, cfg):
+    g=interaction.guild
+    name=(field_value(embed,'Faction') or 'Faction').strip()[:80]
+    color_text=(field_value(embed,'Gang Color') or '').strip()
+    uid=submitter_id(embed)
+    leader=g.get_member(uid) if uid else None
+    if leader is None and uid:
+        try: leader=await g.fetch_member(uid)
+        except discord.HTTPException: leader=None
+    if leader is None: raise RuntimeError('Could not find the leader who submitted this application.')
+
+    gang_role=discord.utils.get(g.roles,name=f'🔫・{name}')
+    if gang_role is None:
+        gang_role=await g.create_role(name=f'🔫・{name}',color=parse_gang_color(color_text),reason=f'Faction approved by {interaction.user}')
+
+    leader_role=g.get_role(cfg.get('roles',{}).get('leader'))
+    wl_role=g.get_role(cfg.get('roles',{}).get('wl'))
+    add=[r for r in (leader_role,wl_role,gang_role) if r]
+    if add: await leader.add_roles(*add,reason=f'Faction approved by {interaction.user}')
+
+    ow={g.default_role:discord.PermissionOverwrite(view_channel=False),
+        gang_role:discord.PermissionOverwrite(view_channel=True,send_messages=True,read_message_history=True,connect=True,speak=True)}
+    for k in ['head','management','staff']:
+        r=g.get_role(cfg.get('roles',{}).get(k))
+        if r: ow[r]=discord.PermissionOverwrite(view_channel=True,send_messages=True,read_message_history=True,connect=True,speak=True)
+
+    cat_name=f'🔒・{name.upper()}'[:100]
+    cat=discord.utils.get(g.categories,name=cat_name)
+    if cat is None: cat=await g.create_category(cat_name,overwrites=ow,reason=f'Faction approved by {interaction.user}')
+
+    for chname,readonly in [('📢・announcements',True),('💬・gang-chat',False),('🎥・gang-clips',False)]:
+        if not discord.utils.get(cat.text_channels,name=chname):
+            cow=dict(ow)
+            if readonly: cow[gang_role]=discord.PermissionOverwrite(view_channel=True,send_messages=False,read_message_history=True)
+            await g.create_text_channel(chname,category=cat,overwrites=cow)
+    if not discord.utils.get(cat.voice_channels,name='🔊・Gang VC'):
+        await g.create_voice_channel('🔊・Gang VC',category=cat,overwrites=ow)
+
+    wlch=g.get_channel(cfg.get('channels',{}).get('whitelisted'))
+    if wlch:
+        e=discord.Embed(title=f'💯 {name}',color=parse_gang_color(color_text))
+        e.add_field(name='Leader',value=leader.mention,inline=False)
+        e.add_field(name='Block',value=field_value(embed,'Block') or 'N/A',inline=True)
+        e.add_field(name='Gang Color',value=color_text or 'Default',inline=True)
+        await wlch.send(embed=e)
+    return leader,gang_role,cat
+
 class DecisionView(discord.ui.View):
     def __init__(self, kind: str):
         super().__init__(timeout=None)
         self.kind = kind
 
     async def decide(self, interaction: discord.Interaction, approved: bool):
-        cfg = guild_cfg(interaction.guild_id)
-        if not staff_check(interaction.user, cfg):
-            return await interaction.response.send_message('Faction Staff only.', ephemeral=True)
-        embed = interaction.message.embeds[0].copy() if interaction.message.embeds else discord.Embed()
-        embed.color = discord.Color.green() if approved else discord.Color.red()
-        embed.add_field(name='Decision', value=f"{'APPROVED ✅' if approved else 'DENIED ❌'} by {interaction.user.mention}", inline=False)
-        await interaction.response.edit_message(embed=embed, view=None)
+        cfg=guild_cfg(interaction.guild_id)
+        if not staff_check(interaction.user,cfg):
+            return await interaction.response.send_message('Faction Staff only.',ephemeral=True)
+        embed=interaction.message.embeds[0].copy() if interaction.message.embeds else discord.Embed()
+        if approved and self.kind=='application':
+            await interaction.response.defer(ephemeral=True)
+            try:
+                leader,gang_role,cat=await build_approved_faction(interaction,embed,cfg)
+            except Exception as exc:
+                return await interaction.followup.send(f'Could not finish faction approval: {exc}',ephemeral=True)
+            embed.color=discord.Color.green()
+            embed.add_field(name='Decision',value=f'APPROVED ✅ by {interaction.user.mention}\nLeader: {leader.mention}\nRole: {gang_role.mention}\nCategory: **{cat.name}**',inline=False)
+            await interaction.message.edit(embed=embed,view=None)
+            return await interaction.followup.send(f'✅ {field_value(embed,"Faction")} approved. Gang role and private section created.',ephemeral=True)
+        embed.color=discord.Color.green() if approved else discord.Color.red()
+        embed.add_field(name='Decision',value=f"{'APPROVED ✅' if approved else 'DENIED ❌'} by {interaction.user.mention}",inline=False)
+        await interaction.response.edit_message(embed=embed,view=None)
 
     @discord.ui.button(label='Approve', style=discord.ButtonStyle.success, custom_id='factions:approve')
     async def approve(self, interaction: discord.Interaction, button: discord.ui.Button):
@@ -61,7 +137,7 @@ class DecisionView(discord.ui.View):
 
 class FactionApplicationModal(discord.ui.Modal, title='Become a Faction'):
     faction = discord.ui.TextInput(label='Faction / Gang Name', max_length=80)
-    leader = discord.ui.TextInput(label='Leader Name / Discord', max_length=100)
+    color = discord.ui.TextInput(label='Gang Color', placeholder='Green or #39FF14', max_length=30)
     members = discord.ui.TextInput(label='Current Member Count', max_length=30)
     block = discord.ui.TextInput(label='Requested Block / Area', required=False, max_length=100)
     info = discord.ui.TextInput(label='Tell us about your faction', style=discord.TextStyle.paragraph, max_length=1000)
@@ -73,7 +149,8 @@ class FactionApplicationModal(discord.ui.Modal, title='Become a Faction'):
             return await interaction.response.send_message('Application review channel is not configured. Run /setup.', ephemeral=True)
         e = discord.Embed(title='🔫 New Faction Application', color=discord.Color.dark_red(), timestamp=datetime.now(timezone.utc))
         e.add_field(name='Faction', value=self.faction.value, inline=False)
-        e.add_field(name='Leader', value=self.leader.value, inline=False)
+        e.add_field(name='Leader', value=interaction.user.mention, inline=False)
+        e.add_field(name='Gang Color', value=self.color.value, inline=True)
         e.add_field(name='Members', value=self.members.value, inline=True)
         e.add_field(name='Block', value=self.block.value or 'N/A', inline=True)
         e.add_field(name='About', value=self.info.value, inline=False)
