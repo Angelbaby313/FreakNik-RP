@@ -307,12 +307,41 @@ async def setup(interaction: discord.Interaction):
     await submit.send(embed=discord.Embed(title='🎥 Submit An Interaction',description='Submit your interaction clip privately for Faction Staff to review and approve or deny.',color=discord.Color.dark_red()),view=SubmitInteractionView())
     await interaction.followup.send('✅ FreakNik RP Factions setup is complete. Roles, categories, channels, VCs and panels were created.',ephemeral=True)
 
+
+def normalize_faction_name(name):
+    # Ignore capitalization, extra spaces, Discord separators, emoji/prefixes and punctuation.
+    value = (name or '').strip().lower()
+    value = value.replace('・', ' ').replace('_', ' ').replace('-', ' ')
+    value = re.sub(r'^[^a-z0-9]+', '', value)
+    value = re.sub(r'\s+', ' ', value).strip()
+    return value
+
+def find_gang_role(guild, faction):
+    wanted = normalize_faction_name(faction)
+    for role in guild.roles:
+        role_name = role.name
+        if role_name.startswith('🔫・'):
+            role_name = role_name.split('・', 1)[1]
+        if normalize_faction_name(role_name) == wanted:
+            return role
+    return None
+
+def find_gang_category(guild, faction):
+    wanted = normalize_faction_name(faction)
+    for category in guild.categories:
+        category_name = category.name
+        if category_name.startswith('🔒・'):
+            category_name = category_name.split('・', 1)[1]
+        if normalize_faction_name(category_name) == wanted:
+            return category
+    return None
+
 def faction_strike_record(guild_id, faction):
     data = load_config()
     gid = str(guild_id)
     data.setdefault(gid, {})
     data[gid].setdefault('strikes', {})
-    key = faction.strip().lower()
+    key = normalize_faction_name(faction)
     data[gid]['strikes'].setdefault(key, {'name': faction.strip(), 'active': [], 'history': []})
     return data, data[gid]['strikes'][key]
 
@@ -323,10 +352,10 @@ async def strike(interaction: discord.Interaction, faction: str, reason: str):
     if not staff_check(interaction.user, cfg):
         return await interaction.response.send_message('Faction Staff only.', ephemeral=True)
 
-    gang_role = discord.utils.get(interaction.guild.roles, name=f'🔫・{faction.strip()}')
+    gang_role = find_gang_role(interaction.guild, faction)
     if gang_role is None:
         return await interaction.response.send_message(
-            f'❌ I could not find an approved faction named **{faction.strip()}**. Use the exact gang name.',
+            f'❌ I could not find an approved faction named **{faction.strip()}**. Check the gang name and try again.',
             ephemeral=True
         )
 
@@ -382,7 +411,7 @@ async def removestrike(interaction: discord.Interaction, faction: str, reason: s
 
     data = load_config()
     gid = str(interaction.guild_id)
-    key = faction.strip().lower()
+    key = normalize_faction_name(faction)
     record = data.get(gid, {}).get('strikes', {}).get(key)
 
     if not record or not record.get('active'):
@@ -431,7 +460,7 @@ async def strikes(interaction: discord.Interaction, faction: str):
         return await interaction.response.send_message('Faction Staff only.', ephemeral=True)
 
     data = load_config()
-    key = faction.strip().lower()
+    key = normalize_faction_name(faction)
     record = data.get(str(interaction.guild_id), {}).get('strikes', {}).get(key)
 
     if not record:
@@ -492,12 +521,12 @@ async def disband(interaction: discord.Interaction, faction: str):
     g = interaction.guild
     name = faction.strip()[:80]
 
-    gang_role = discord.utils.get(g.roles, name=f'🔫・{name}')
-    category = discord.utils.get(g.categories, name=f'🔒・{name.upper()}'[:100])
+    gang_role = find_gang_role(g, name)
+    category = find_gang_category(g, name)
 
     if gang_role is None and category is None:
         return await interaction.followup.send(
-            f'❌ I could not find an approved faction named **{name}**. Use the exact gang name.',
+            f'❌ I could not find an approved faction named **{name}**. Check the gang name and try again.',
             ephemeral=True
         )
 
@@ -537,7 +566,7 @@ async def disband(interaction: discord.Interaction, faction: str):
     # Clear active strikes when a faction is disbanded, while preserving history.
     data = load_config()
     gid = str(g.id)
-    key = name.lower()
+    key = normalize_faction_name(name)
     record = data.get(gid, {}).get('strikes', {}).get(key)
     if record:
         record.setdefault('history', []).append({
