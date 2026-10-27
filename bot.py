@@ -325,6 +325,77 @@ async def whitelist(interaction: discord.Interaction, member: discord.Member):
     await member.add_roles(role,reason=f'Whitelisted by {interaction.user}')
     await interaction.response.send_message(f'💯 {member.mention} now has WL Faction access.',ephemeral=True)
 
+
+@bot.tree.command(name='disband', description='Disband a whitelisted faction and remove its Discord setup', guild=guild_obj)
+@app_commands.describe(faction='Exact faction/gang name to disband')
+async def disband(interaction: discord.Interaction, faction: str):
+    cfg = guild_cfg(interaction.guild_id)
+    if not staff_check(interaction.user, cfg):
+        return await interaction.response.send_message('Faction Staff only.', ephemeral=True)
+
+    await interaction.response.defer(ephemeral=True)
+    g = interaction.guild
+    name = faction.strip()[:80]
+
+    gang_role = discord.utils.get(g.roles, name=f'🔫・{name}')
+    category = discord.utils.get(g.categories, name=f'🔒・{name.upper()}'[:100])
+
+    if gang_role is None and category is None:
+        return await interaction.followup.send(
+            f'❌ I could not find an approved faction named **{name}**. Use the exact gang name.',
+            ephemeral=True
+        )
+
+    affected = []
+    if gang_role:
+        affected = list(gang_role.members)
+
+    # Remove Gang Leaders/WL Faction from members of this gang.
+    leader_role = g.get_role(cfg.get('roles', {}).get('leader'))
+    wl_role = g.get_role(cfg.get('roles', {}).get('wl'))
+    for member in affected:
+        remove_roles = [r for r in (gang_role, leader_role, wl_role) if r and r in member.roles]
+        if remove_roles:
+            try:
+                await member.remove_roles(*remove_roles, reason=f'{name} disbanded by {interaction.user}')
+            except discord.HTTPException:
+                pass
+
+    # Delete every channel in the gang category, then the category.
+    if category:
+        for channel in list(category.channels):
+            try:
+                await channel.delete(reason=f'{name} disbanded by {interaction.user}')
+            except discord.HTTPException:
+                pass
+        try:
+            await category.delete(reason=f'{name} disbanded by {interaction.user}')
+        except discord.HTTPException:
+            pass
+
+    if gang_role:
+        try:
+            await gang_role.delete(reason=f'{name} disbanded by {interaction.user}')
+        except discord.HTTPException:
+            pass
+
+    # Post a clear disband notice in the whitelist channel.
+    whitelist_ch = g.get_channel(cfg.get('channels', {}).get('whitelisted'))
+    if whitelist_ch:
+        e = discord.Embed(
+            title='🚫 Faction Disbanded',
+            description=f'**{name}** has been removed from the FreakNik RP faction whitelist.',
+            color=discord.Color.red(),
+            timestamp=datetime.now(timezone.utc)
+        )
+        e.add_field(name='Disbanded By', value=interaction.user.mention, inline=False)
+        await whitelist_ch.send(embed=e)
+
+    await interaction.followup.send(
+        f'✅ **{name}** has been disbanded. Gang role, WL/leader access for its members, and private faction category/channels were removed.',
+        ephemeral=True
+    )
+
 @setup.error
 async def setup_error(interaction, error):
     if isinstance(error, app_commands.MissingPermissions):
