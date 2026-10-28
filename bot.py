@@ -390,6 +390,159 @@ def faction_strike_record(guild_id, faction):
     data[gid]['strikes'].setdefault(key, {'name': faction.strip(), 'active': [], 'history': []})
     return data, data[gid]['strikes'][key]
 
+
+@bot.tree.command(name='registergang', description='Faction Staff: register a gang and create its full Discord setup', guild=guild_obj)
+@app_commands.describe(
+    gang_name='Official gang/faction name',
+    leader='Initial Gang Leader',
+    gang_color='Gang color name or hex, e.g. Red or #FF0000'
+)
+async def registergang(
+    interaction: discord.Interaction,
+    gang_name: str,
+    leader: discord.Member,
+    gang_color: str
+):
+    cfg = guild_cfg(interaction.guild_id)
+
+    if not staff_check(interaction.user, cfg):
+        return await interaction.response.send_message('❌ Faction Staff only.', ephemeral=True)
+
+    await interaction.response.defer(ephemeral=True)
+
+    g = interaction.guild
+    name = gang_name.strip()[:80]
+    color_text = gang_color.strip()
+
+    if not name:
+        return await interaction.followup.send('❌ Enter a gang name.', ephemeral=True)
+
+    # Stop duplicate gang registrations.
+    if find_gang_role(g, name) or find_gang_category(g, name):
+        return await interaction.followup.send(
+            f'❌ **{name}** is already registered. No duplicate was created.',
+            ephemeral=True
+        )
+
+    try:
+        # Create gang-specific colored role.
+        gang_role = await g.create_role(
+            name=f'🔫・{name}',
+            color=parse_gang_color(color_text),
+            reason=f'Faction registered by {interaction.user}'
+        )
+
+        leader_role = g.get_role(cfg.get('roles', {}).get('leader'))
+        wl_role = g.get_role(cfg.get('roles', {}).get('wl'))
+
+        # Put gang role above Gang Leader/WL so gang color displays.
+        if leader_role:
+            try:
+                await g.edit_role_positions(
+                    positions={gang_role: leader_role.position + 1},
+                    reason=f'Prioritize {name} gang color'
+                )
+            except (discord.Forbidden, discord.HTTPException):
+                pass
+
+        # Give initial leader all required faction roles.
+        roles_to_add = [r for r in (leader_role, wl_role, gang_role) if r]
+        if roles_to_add:
+            await leader.add_roles(
+                *roles_to_add,
+                reason=f'Initial leader of {name}; registered by {interaction.user}'
+            )
+
+        # Private permissions for this gang and faction staff.
+        overwrites = {
+            g.default_role: discord.PermissionOverwrite(view_channel=False),
+            gang_role: discord.PermissionOverwrite(
+                view_channel=True,
+                send_messages=True,
+                read_message_history=True,
+                connect=True,
+                speak=True
+            )
+        }
+
+        for key in ['head', 'management', 'staff']:
+            staff_role = g.get_role(cfg.get('roles', {}).get(key))
+            if staff_role:
+                overwrites[staff_role] = discord.PermissionOverwrite(
+                    view_channel=True,
+                    send_messages=True,
+                    read_message_history=True,
+                    connect=True,
+                    speak=True
+                )
+
+        # Create private gang category.
+        category = await g.create_category(
+            f'🔒・{name.upper()}'[:100],
+            overwrites=overwrites,
+            reason=f'Faction registered by {interaction.user}'
+        )
+
+        # Create gang channels.
+        announcement_overwrites = dict(overwrites)
+        announcement_overwrites[gang_role] = discord.PermissionOverwrite(
+            view_channel=True,
+            send_messages=False,
+            read_message_history=True
+        )
+
+        await g.create_text_channel(
+            '📢・announcements',
+            category=category,
+            overwrites=announcement_overwrites
+        )
+        await g.create_text_channel(
+            '💬・gang-chat',
+            category=category,
+            overwrites=overwrites
+        )
+        await g.create_text_channel(
+            '🎥・gang-clips',
+            category=category,
+            overwrites=overwrites
+        )
+        await g.create_voice_channel(
+            '🔊・Gang VC',
+            category=category,
+            overwrites=overwrites
+        )
+
+        # Add official faction listing.
+        whitelist_ch = g.get_channel(cfg.get('channels', {}).get('whitelisted'))
+        if whitelist_ch:
+            embed = discord.Embed(
+                title=f'💯 {name}',
+                description='Officially registered by Faction Staff.',
+                color=parse_gang_color(color_text),
+                timestamp=datetime.now(timezone.utc)
+            )
+            embed.add_field(name='Gang Leader', value=leader.mention, inline=False)
+            embed.add_field(name='Gang Color', value=color_text or 'Default', inline=True)
+            embed.add_field(name='Registered By', value=interaction.user.mention, inline=True)
+            await whitelist_ch.send(embed=embed)
+
+        await interaction.followup.send(
+            f'✅ **{name}** is registered!\n'
+            f'👑 Leader: {leader.mention}\n'
+            f'🎭 Role: {gang_role.mention}\n'
+            f'🔒 Private gang category + channels created.',
+            ephemeral=True
+        )
+
+    except discord.Forbidden:
+        await interaction.followup.send(
+            '❌ I am missing Discord permissions. Make sure my bot role is high enough and has Manage Roles + Manage Channels.',
+            ephemeral=True
+        )
+    except discord.HTTPException as exc:
+        await interaction.followup.send(f'❌ Discord could not finish the gang setup: {exc}', ephemeral=True)
+
+
 @bot.tree.command(name='strike', description='Give a faction an official strike', guild=guild_obj)
 @app_commands.describe(faction='Exact faction/gang name', reason='Reason for the strike')
 async def strike(interaction: discord.Interaction, faction: str, reason: str):
